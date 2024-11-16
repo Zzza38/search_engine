@@ -6,6 +6,16 @@ from tqdm import tqdm
 import time
 import json
 from urllib.robotparser import RobotFileParser
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+import os
+
+# Configure logging
+logging.basicConfig(
+    filename='crawler.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 def welcome():
     print('Welcome to the website crawler.')
@@ -21,12 +31,10 @@ def rootURL(url):
     return root
 
 def get_site_root(url):
-    """Returns the site root, stripping subdomains and paths."""
     parsed = urlparse(url)
-    # Remove subdomains
     domain_parts = parsed.netloc.split('.')
     if len(domain_parts) > 2:
-        domain_parts = domain_parts[-2:]  # Keep the last two parts
+        domain_parts = domain_parts[-2:]
     site_root = parsed.scheme + "://" + ".".join(domain_parts)
     return site_root
 
@@ -38,7 +46,7 @@ def get_robots_txt(url):
         response.raise_for_status()
         return response.text
     except requests.RequestException as e:
-        print(f"Error fetching robots.txt from {robots_url}: {e}")
+        logging.error(f"Error fetching robots.txt from {robots_url}: {e}")
         return None
 
 def is_allowed_to_crawl(robots_txt, url):
@@ -56,7 +64,7 @@ def crawl_site(url, robots_txt=None, retries=3, delay=5):
             response = requests.get(url)
             
             if response.status_code == 429:
-                print(f"Received 429 for {url}. Retrying in {delay} seconds...")
+                logging.warning(f"Received 429 for {url}. Retrying in {delay} seconds...")
                 time.sleep(delay)
                 attempt += 1
                 continue
@@ -66,11 +74,11 @@ def crawl_site(url, robots_txt=None, retries=3, delay=5):
             break
 
         except requests.RequestException as e:
-            print(f"Error fetching the URL {url}: {e}")
+            logging.error(f"Error fetching the URL {url}: {e}")
             return []
-    
+
     if attempt == retries:
-        print(f"Max retries reached for {url}. Skipping.")
+        logging.error(f"Max retries reached for {url}. Skipping.")
         return []
 
     url_pattern = re.compile(r'href=["\'](https?://[^\s"\']+|/[^\s"\']+|[\./\w\-]+\.html?)["\']')
@@ -85,48 +93,55 @@ def crawl_site(url, robots_txt=None, retries=3, delay=5):
 
 def calculate_vote_weight(current_root, target_root):
     if current_root == target_root:
-        return 0.1  # Same site
+        return 0.1
     elif target_root.endswith("." + current_root) or current_root.endswith("." + target_root):
-        return 0.25  # Sibling/child relationship
+        return 0.25
     else:
-        return 1  # Unrelated site
+        return 1
 
-def process_urls(urls, depth, visited, to_visit, max_depth, progress_bar, robots_txt=None, result_dict=None, vote_counts=None):
-    for url in urls:
-        if url in visited:
-            continue
-        visited.add(url)
+def process_url(url, depth, robots_txt, visited, vote_counts, result_dict, max_depth):
+    if url in visited:
+        return []
+    visited.add(url)
+    current_root = get_site_root(url)
+    found_urls = crawl_site(url, robots_txt)
+    if url not in result_dict:
+        result_dict[url] = []
 
-        current_root = get_site_root(url)
+    for new_url in found_urls:
+        new_root = get_site_root(new_url)
+        weight = calculate_vote_weight(current_root, new_root)
+        vote_counts[new_root] += weight
 
-        found_urls = crawl_site(url, robots_txt)
-        if url not in result_dict:
-            result_dict[url] = []
-
-        for new_url in found_urls:
-            new_root = get_site_root(new_url)
-            weight = calculate_vote_weight(current_root, new_root)
-
-            vote_counts[new_root] += weight
-            if new_url not in visited and depth < max_depth:
-                to_visit.append((new_url, depth + 1))
-                result_dict[url].append(new_url)
-
-        progress_bar.total = len(visited) + len(to_visit)
-        progress_bar.set_postfix({'Generation': f'{depth}', "Remaining": len(to_visit)})
-        progress_bar.update(1)
+    return [(new_url, depth + 1) for new_url in found_urls if new_url not in visited and depth < max_depth]
 
 def search_all_urls(start_url, max_depth, robots_txt=None):
     visited = set()
     to_visit = [(start_url, 1)]
     result_dict = {}
-    vote_counts = defaultdict(float)  # Use float to accommodate fractional weights
+    vote_counts = defaultdict(float)
+    max_threads = os.cpu_count() - 2
+    fetch_threads = max_threads // 2
+    process_threads = max_threads - fetch_threads
 
     progress_bar = tqdm(total=1000, dynamic_ncols=True, desc="Crawling", unit=" URLs")
+    with ThreadPoolExecutor(max_workers=max_threads) as executor:
+        while to_visit:
+            future_to_url = {
+                executor.submit(process_url, url, depth, robots_txt, visited, vote_counts, result_dict, max_depth): (url, depth)
+                for url, depth in to_visit[:process_threads]
+            }
+            to_visit = to_visit[process_threads:]
 
-    while to_visit:
-        url, depth = to_visit.pop(0)
-        process_urls([url], depth, visited, to_visit, max_depth, progress_bar, robots_txt, result_dict, vote_counts)
+            for future in as_completed(future_to_url):
+                try:
+                    new_urls = future.result()
+                    to_visit.extend(new_urls)
+                except Exception as e:
+                    logging.error(f"Error processing URL {future_to_url[future][0]}: {e}")
+
+            progress_bar.total = len(visited) + len(to_visit)
+            progress_bar.update(len(future_to_url))
 
     progress_bar.close()
     return result_dict, vote_counts
