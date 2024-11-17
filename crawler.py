@@ -94,7 +94,7 @@ def extract_links(html, base_url):
     html_urls = [u for u in urls if re.match(r'https?://[^\s]+(?:\.html?)?$', u)]
     return html_urls
 
-def fetcher_thread(start_urls, robots_txt, max_depth):
+def fetcher_thread(robots_txt, max_depth):
     """Fetch HTML documents and store them in a queue."""
     while start_urls:
         with visited_lock:
@@ -109,7 +109,7 @@ def fetcher_thread(start_urls, robots_txt, max_depth):
         if html:
             html_queue.put((url, html, depth))
 
-def processor_thread(start_urls, max_depth):
+def processor_thread(max_depth):
     """Process HTML documents from the queue and extract links."""
     while True:
         try:
@@ -138,9 +138,9 @@ def processor_thread(start_urls, max_depth):
 
         html_queue.task_done()
 
-def tqdm_thread(total, start_urls):
+def tqdm_thread():
     """Run TQDM progress bar."""
-    with tqdm(total=total, dynamic_ncols=True, desc="Crawling", unit=" URLs") as pbar:
+    with tqdm(total=len(visited), dynamic_ncols=True, desc="Crawling", unit=" URLs") as pbar:
         while True:
             with visited_lock:
                 processed = len(visited)
@@ -150,7 +150,7 @@ def tqdm_thread(total, start_urls):
             pbar.n = processed
             pbar.refresh()
 
-            time.sleep(0.1)  # Reduce CPU usage
+            time.sleep(0.01)  # Reduce CPU usage
             if not start_urls and html_queue.empty():
                 break
 
@@ -164,8 +164,7 @@ def calculate_vote_weight(current_root, target_root):
 
 def search_all_urls(start_url, max_depth, robots_txt=None):
     """Search all URLs using multithreaded fetchers and a single processor."""
-    global visited, result_dict, vote_counts
-    visited = set()
+    global result_dict, vote_counts, start_urls
     result_dict = {}
     vote_counts = defaultdict(float)
 
@@ -177,9 +176,9 @@ def search_all_urls(start_url, max_depth, robots_txt=None):
         fetch_threads = 1
     # process_threads = 1 ### Unused
 
-    fetchers = [Thread(target=fetcher_thread, args=(start_urls, robots_txt, max_depth)) for _ in range(fetch_threads)]
-    processor = Thread(target=processor_thread, args=(start_urls, max_depth))
-    progress = Thread(target=tqdm_thread, args=(1000, start_urls))
+    fetchers = [Thread(target=fetcher_thread, args=(robots_txt, max_depth)) for _ in range(fetch_threads)]
+    processor = Thread(target=processor_thread, args=(max_depth))
+    progress = Thread(target=tqdm_thread)
 
     for thread in fetchers + [processor, progress]:
         thread.start()
@@ -203,22 +202,26 @@ if __name__ == "__main__":
 
     robots_txt = get_robots_txt(website)
 
-    start_time = time.time()
     crawl_result, vote_counts = search_all_urls(website, depth, robots_txt)
     end_time = time.time()
 
+    start_time = time.time()
     total_time = end_time - start_time
     print(f"\nCrawling completed in {total_time:.2f} seconds.")
 
+    start_time = time.time()
     output_folder = './crawl_results/'
     output_crawl_path = 'crawl_paths.json'
     output_votes_path = 'vote_counts.json'
+    start_time = time.time()
 
     with open(output_folder + output_crawl_path, 'w') as crawl_file:
         json.dump(crawl_result, crawl_file, indent=4)
+    start_time = time.time()
 
     with open(output_folder + output_votes_path, 'w') as votes_file:
         json.dump(vote_counts, votes_file, indent=4)
+    start_time = time.time()
 
     print(f"Crawl results saved to '{output_crawl_path}'.")
     print(f"Vote counts saved to '{output_votes_path}'.")
