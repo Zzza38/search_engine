@@ -100,7 +100,7 @@ def extract_links(html, base_url):
     html_urls = [u for u in urls if re.match(r'https?://[^\s]+(?:\.html?)?$', u)]
     return html_urls
 
-def fetcher_thread(robots_txt, max_depth):
+def fetcher_thread(max_depth):
     """Fetch HTML documents and store them in a queue."""
     while start_urls:
         with visited_lock:
@@ -146,7 +146,7 @@ def processor_thread(max_depth):
 
 def tqdm_thread():
     """Run TQDM progress bar."""
-    with tqdm(total=len(visited), dynamic_ncols=True, desc="Crawling", unit=" URLs") as pbar:
+    with tqdm(total=len(visited), dynamic_ncols=True, desc="Crawling", unit=" URLs/s") as pbar:
         while True:
             with visited_lock:
                 processed = len(visited)
@@ -168,7 +168,7 @@ def calculate_vote_weight(current_root, target_root):
     else:
         return 1
 
-def search_all_urls(start_url, max_depth, robots_txt=None):
+def search_all_urls(start_url, max_depth):
     """Search all URLs using multithreaded fetchers and a single processor."""
     global result_dict, vote_counts, start_urls
     result_dict = {}
@@ -182,7 +182,7 @@ def search_all_urls(start_url, max_depth, robots_txt=None):
         fetch_threads = 1
     # process_threads = 1 ### Unused
 
-    fetchers = [Thread(target=fetcher_thread, args=(robots_txt, max_depth)) for _ in range(fetch_threads)]
+    fetchers = [Thread(target=fetcher_thread, args=(max_depth)) for _ in range(fetch_threads)]
     processor = Thread(target=processor_thread, args=(max_depth))
     progress = Thread(target=tqdm_thread)
 
@@ -206,9 +206,7 @@ if __name__ == "__main__":
 
     depth = int(input('How deep should the crawl go (generations)? '))
 
-    robots_txt = get_robots_txt(website)
-
-    crawl_result, vote_counts = search_all_urls(website, depth, robots_txt)
+    crawl_result, vote_counts = search_all_urls(website, depth)
     end_time = time.time()
 
     start_time = time.time()
