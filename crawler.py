@@ -181,8 +181,8 @@ def search_all_urls(start_url, max_depth):
         fetch_threads = 1
     # process_threads = 1 ### Unused
 
-    fetchers = [Thread(target=fetcher_thread, args=(max_depth)) for _ in range(fetch_threads)]
-    processor = Thread(target=processor_thread, args=(max_depth))
+    fetchers = [Thread(target=fetcher_thread, args=(max_depth,)) for _ in range(fetch_threads)]
+    processor = Thread(target=processor_thread, args=(max_depth,))
     progress = Thread(target=tqdm_thread)
 
     for thread in fetchers + [processor, progress]:
