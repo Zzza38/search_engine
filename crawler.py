@@ -61,7 +61,7 @@ def is_allowed_to_crawl(robots_txt, url):
     return robot_parser.can_fetch('*', url)
 
 def crawl_site(url, retries=3, delay=5):
-    if robots_txt[rootURL(url)]:
+    if rootURL(url) in robots_txt:
         robots = robots_txt[rootURL(url)]
     else:
         robots = get_robots_txt(url)
