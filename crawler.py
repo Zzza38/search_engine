@@ -218,6 +218,10 @@ if __name__ == "__main__":
     output_votes_path = 'vote_counts.json'
     start_time = time.time()
 
+    try: 
+        os.mkdir(output_folder)
+    except:
+        pass
     with open(output_folder + output_crawl_path, 'w') as crawl_file:
         json.dump(crawl_result, crawl_file, indent=4)
     start_time = time.time()
