@@ -34,14 +34,6 @@ def rootURL(url):
     root = urlunparse((parsed.scheme, parsed.netloc, '/', '', '', ''))
     return root
 
-def get_site_root(url):
-    parsed = urlparse(url)
-    domain_parts = parsed.netloc.split('.')
-    if len(domain_parts) > 2:
-        domain_parts = domain_parts[-2:]
-    site_root = parsed.scheme + "://" + ".".join(domain_parts)
-    return site_root
-
 def get_robots_txt(url):
     root_url = rootURL(url)
     robots_url = root_url + 'robots.txt'
@@ -49,43 +41,40 @@ def get_robots_txt(url):
         headers = {'User-Agent': 'Seekora'}
         response = requests.get(robots_url, headers=headers)
         response.raise_for_status()
-        robots_txt[url] = response.text
+        robots_txt[root_url] = response.text
         return response.text
     except requests.RequestException as e:
         logging.error(f"Error fetching robots.txt from {robots_url}: {e}")
         return None
 
-def is_allowed_to_crawl(robots_txt, url):
+def is_allowed_to_crawl(robots_txt_content, url):
     robot_parser = RobotFileParser()
-    robot_parser.parse(robots_txt.splitlines())
+    robot_parser.parse(robots_txt_content.splitlines())
     return robot_parser.can_fetch('*', url)
 
 def crawl_site(url, retries=3, delay=5):
-    if rootURL(url) in robots_txt:
-        robots = robots_txt[rootURL(url)]
+    root_url = rootURL(url)
+    if root_url in robots_txt:
+        robots = robots_txt[root_url]
     else:
         robots = get_robots_txt(url)
     if robots and not is_allowed_to_crawl(robots, url):
-        return []
+        return None
 
-    attempt = 0
-    while attempt < retries:
+    for attempt in range(retries):
         try:
             headers = {'User-Agent': 'Seekora'}
             response = requests.get(url, headers=headers)
             if response.status_code == 429:
                 logging.warning(f"Received 429 for {url}. Retrying in {delay} seconds...")
                 time.sleep(delay)
-                attempt += 1
                 continue
 
             response.raise_for_status()
             return response.text
-
         except requests.RequestException as e:
             logging.error(f"Error fetching the URL {url}: {e}")
-            return None
-
+            time.sleep(delay)
     return None
 
 def extract_links(html, base_url):
@@ -100,9 +89,9 @@ def extract_links(html, base_url):
     html_urls = [u for u in urls if re.match(r'https?://[^\s]+(?:\.html?)?$', u)]
     return html_urls
 
-def fetcher_thread(max_depth):
+def fetcher_thread(max_depth, progress_bar):
     """Fetch HTML documents and store them in a queue."""
-    while start_urls:
+    while True:
         with visited_lock:
             if not start_urls:
                 break
@@ -110,12 +99,13 @@ def fetcher_thread(max_depth):
             if url in visited or depth > max_depth:
                 continue
             visited.add(url)
+            progress_bar.update(1)
 
         html = crawl_site(url)
         if html:
             html_queue.put((url, html, depth))
 
-def processor_thread(max_depth):
+def processor_thread(max_depth, progress_bar):
     """Process HTML documents from the queue and extract links."""
     while True:
         try:
@@ -126,46 +116,17 @@ def processor_thread(max_depth):
             continue
 
         found_urls = extract_links(html, url)
-        current_root = get_site_root(url)
-
         with result_lock:
             if url not in result_dict:
                 result_dict[url] = []
 
             for new_url in found_urls:
-                new_root = get_site_root(new_url)
-                weight = calculate_vote_weight(current_root, new_root)
-                vote_counts[new_root] += weight
-
                 with visited_lock:
                     if new_url not in visited and depth + 1 <= max_depth:
                         start_urls.append((new_url, depth + 1))
                         result_dict[url].append(new_url)
 
         html_queue.task_done()
-
-def tqdm_thread():
-    """Run TQDM progress bar."""
-    with tqdm(total=len(visited), dynamic_ncols=True, desc="Crawling", unit=" URLs/s") as pbar:
-        while True:
-            processed = len(visited)
-            to_visit = len(start_urls)
-
-            pbar.total = processed + to_visit
-            pbar.n = processed
-            pbar.refresh()
-
-            time.sleep(0.01)  # Reduce CPU usage
-            if not start_urls and html_queue.empty():
-                break
-
-def calculate_vote_weight(current_root, target_root):
-    if current_root == target_root:
-        return 0.1
-    elif target_root.endswith("." + current_root) or current_root.endswith("." + target_root):
-        return 0.25
-    else:
-        return 1
 
 def search_all_urls(start_url, max_depth):
     """Search all URLs using multithreaded fetchers and a single processor."""
@@ -174,29 +135,25 @@ def search_all_urls(start_url, max_depth):
     vote_counts = defaultdict(float)
 
     start_urls = [(start_url, 1)]
-    total_threads = os.cpu_count() - 1  # Reserve 1 thread for system
+    total_urls = len(start_urls)
 
-    fetch_threads = total_threads - 2
-    if fetch_threads < 1:
-        fetch_threads = 1
-    # process_threads = 1 ### Unused
+    with tqdm(total=total_urls, dynamic_ncols=True, desc="Crawling", unit="URLs") as progress_bar:
+        fetch_threads = []
+        for _ in range(max(1, os.cpu_count() - 2)):
+            thread = Thread(target=fetcher_thread, args=(max_depth, progress_bar))
+            thread.start()
+            fetch_threads.append(thread)
 
-    fetchers = [Thread(target=fetcher_thread, args=(max_depth,)) for _ in range(fetch_threads)]
-    processor = Thread(target=processor_thread, args=(max_depth,))
-    progress = Thread(target=tqdm_thread)
+        processor = Thread(target=processor_thread, args=(max_depth, progress_bar))
+        processor.start()
 
-    for thread in fetchers + [processor, progress]:
-        thread.start()
-
-    for thread in fetchers + [processor, progress]:
-        thread.join()
+        for thread in fetch_threads:
+            thread.join()
+        processor.join()
 
     return result_dict, vote_counts
 
 if __name__ == "__main__":
-    if os.cpu_count() < 4:
-        print('You do not have enough threads to run this program.')
-        os.abort()
     print('Welcome to the website crawler.')
     website = input('What website would you like to start with: ')
 
@@ -204,31 +161,24 @@ if __name__ == "__main__":
         website = 'https://' + website
 
     depth = int(input('How deep should the crawl go (generations)? '))
+    start_time = time.time()
 
     crawl_result, vote_counts = search_all_urls(website, depth)
+
     end_time = time.time()
+    print(f"\nCrawling completed in {end_time - start_time:.2f} seconds.")
 
-    start_time = time.time()
-    total_time = end_time - start_time
-    print(f"\nCrawling completed in {total_time:.2f} seconds.")
-
-    start_time = time.time()
     output_folder = './crawl_results/'
     output_crawl_path = 'crawl_paths.json'
     output_votes_path = 'vote_counts.json'
-    start_time = time.time()
 
-    try: 
-        os.mkdir(output_folder)
-    except:
-        pass
+    os.makedirs(output_folder, exist_ok=True)
+
     with open(output_folder + output_crawl_path, 'w') as crawl_file:
         json.dump(crawl_result, crawl_file, indent=4)
-    start_time = time.time()
 
     with open(output_folder + output_votes_path, 'w') as votes_file:
         json.dump(vote_counts, votes_file, indent=4)
-    start_time = time.time()
 
-    print(f"Crawl results saved to '{output_crawl_path}'.")
-    print(f"Vote counts saved to '{output_votes_path}'.")
+    print(f"Crawl results saved to '{output_folder + output_crawl_path}'.")
+    print(f"Vote counts saved to '{output_folder + output_votes_path}'.")
