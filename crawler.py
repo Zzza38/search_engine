@@ -24,6 +24,7 @@ result_lock = Lock()
 visited_lock = Lock()
 
 # Shared results and state
+robots_txt = {}
 visited = set()
 result_dict = {}
 vote_counts = defaultdict(float)
@@ -48,6 +49,7 @@ def get_robots_txt(url):
         headers = {'User-Agent': 'Seekora'}
         response = requests.get(robots_url, headers=headers)
         response.raise_for_status()
+        robots_txt[url] = response.text
         return response.text
     except requests.RequestException as e:
         logging.error(f"Error fetching robots.txt from {robots_url}: {e}")
@@ -58,8 +60,12 @@ def is_allowed_to_crawl(robots_txt, url):
     robot_parser.parse(robots_txt.splitlines())
     return robot_parser.can_fetch('*', url)
 
-def crawl_site(url, robots_txt=None, retries=3, delay=5):
-    if robots_txt and not is_allowed_to_crawl(robots_txt, url):
+def crawl_site(url, retries=3, delay=5):
+    if robots_txt[rootURL(url)]:
+        robots = robots_txt[rootURL(url)]
+    else:
+        robots = get_robots_txt(url)
+    if robots and not is_allowed_to_crawl(robots, url):
         return []
 
     attempt = 0
@@ -105,7 +111,7 @@ def fetcher_thread(robots_txt, max_depth):
                 continue
             visited.add(url)
 
-        html = crawl_site(url, robots_txt)
+        html = crawl_site(url)
         if html:
             html_queue.put((url, html, depth))
 
