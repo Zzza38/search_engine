@@ -148,9 +148,8 @@ def tqdm_thread():
     """Run TQDM progress bar."""
     with tqdm(total=len(visited), dynamic_ncols=True, desc="Crawling", unit=" URLs/s") as pbar:
         while True:
-            with visited_lock:
-                processed = len(visited)
-                to_visit = len(start_urls)
+            processed = len(visited)
+            to_visit = len(start_urls)
 
             pbar.total = processed + to_visit
             pbar.n = processed
